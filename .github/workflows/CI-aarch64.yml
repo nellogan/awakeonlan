@@ -4,14 +4,6 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'tests/**'
-      - 'Makefile'
-      - 'Dockerfile'
-      - 'format.sh'
-      - 'lint.sh'
 
 permissions:
   contents: read
