@@ -1,0 +1,55 @@
+name: CI-aarch64
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'Makefile'
+      - 'Dockerfile'
+      - 'format.sh'
+      - 'lint.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  CI-aarch64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build CI Docker Image with GHA Caching
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          tags: ci-runner-arm64
+          load: true
+          cache-from: type=gha,scope=ci-arm64
+          cache-to: type=gha,scope=ci-arm64,mode=max
+
+      # NOTE: MemorySanitizer (msan) is intentionally excluded here because it forces
+      # personality() / ADDR_NO_RANDOMIZE virtual memory layout requirements that
+      # fail under QEMU user-mode emulation.
+      # Additionally, LSAN_OPTIONS=detect_leaks=0 is passed because LeakSanitizer's
+      # thread-stopping (ptrace) is unsupported under emulation.
+      - name: Run Emulated ARM64 CI Pipeline (Excluding MSan)
+        run: |
+          docker run --rm \
+            --platform linux/arm64 \
+            --init \
+            ci-runner-arm64 \
+            bash -c "make format-check && make lint && LSAN_OPTIONS=detect_leaks=0 make CONFIG=xsan test && make test-valgrind"

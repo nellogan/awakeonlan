@@ -1,0 +1,45 @@
+name: CI-x86_64
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'Makefile'
+      - 'Dockerfile'
+      - 'format.sh'
+      - 'lint.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  CI-x86_64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build CI Docker Image with GHA Caching
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: ci-runner-x86_64
+          load: true
+          cache-from: type=gha,scope=ci-amd64
+          cache-to: type=gha,scope=ci-amd64,mode=max
+
+      - name: Run Full Native CI Pipeline (ASan, MSan, Valgrind)
+        run: |
+          docker run --rm \
+            --init \
+            ci-runner-x86_64 \
+            bash -c "make format-check && make lint && make CONFIG=xsan test && make CONFIG=msan test && make test-valgrind"

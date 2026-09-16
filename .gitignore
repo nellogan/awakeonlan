@@ -1,0 +1,10 @@
+.*
+!.gitignore
+!.clang-format
+!.clang-tidy
+!.dockerignore
+!.github/
+
+bin/
+build/
+logs/
