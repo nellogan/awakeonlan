@@ -1,176 +1,149 @@
-.PHONY: all build test build-system-test test-xsan test-msan test-tsan test-sanitizers test-memcheck test-helgrind \
-test-valgrind clean clean-all
+.PHONY: all build test test-valgrind format format-check lint install uninstall clean
 
-ifeq ($(PREFIX),)
-    PREFIX := /usr/local
-endif
+# Configuration selection (override via command line: make CONFIG=xsan)
+CONFIG ?= default
 
-PROJ_NAME := awakeonlan
+PREFIX ?= /usr/local
+
+# Directories (isolated per configuration to prevent object mixing)
 SRC_DIR := src
 INC_DIR := include
-BUILD_DIR := build
-BIN_DIR := bin
-TEST_DIR := test
-LOG_DIR := log
+BUILD_DIR := build/$(CONFIG)
+BIN_DIR := bin/$(CONFIG)
+LOG_DIR := logs
+TEST_DIR := tests
 
-_CREATE_BUILD_DIR := $(shell mkdir -p $(BUILD_DIR))
-_CREATE_BIN_DIR := $(shell mkdir -p $(BIN_DIR))
-_CREATE_LOG_DIR := $(shell mkdir -p $(LOG_DIR))
+# Sanitizer & Compiler Flags
+XSAN_FLAGS := -fsanitize=address,leak,undefined -fno-sanitize-recover=undefined
+MSAN_FLAGS := -fsanitize=memory -fsanitize-memory-track-origins=2 -stdlib=libc++
+#TSAN_FLAGS := -fsanitize=thread
 
-#CXX := g++
-CXX := clang++
-OPT := -O2
-WARNING_FLAGS := -Wall -Wextra -Werror -pedantic
-CXXFLAGS := -I$(INC_DIR) $(OPT) $(WARNING_FLAGS)
-SAN_FLAG ?=
-
-# gcc/g++ does not support memory sanitizer.
-# By default undefined sanitizer does not halt execution upon error so '-fno-sanitize-recover=undefined' is added.
-# Address, leak, and undefined sanitizer may be combined but memory and thread sanitizers cannot.
-# NB: -stdlib=libc++ must be included for memory sanitizer (sudo apt install libc++-dev if missing) to work properly,
-# else false positives will be abundant. Memory sanitizer requires all code (including c++ standard libraries) to be
-# instrumented. If the apt installed libc++ was not instrumented with memory sanitizer download clangs source and
-# compile it. See:
-#	https://github.com/google/sanitizers/wiki/MemorySanitizerLibcxxHowTo
-#	https://github.com/google/sanitizers/issues/1815
-ifeq ($(SAN_FLAG), xsan)
-	CXXFLAGS += -fsanitize=address,leak,undefined -fno-sanitize-recover=undefined
-else ifeq ($(SAN_FLAG), msan)
-	ifeq ($(CXX), clang++)
-	    CXXFLAGS += -fsanitize=memory -stdlib=libc++
-	else
-        $(warning "Warning: gcc/g++ does not support memory sanitizer. Tests will be performed without memory sanitizer.")
-	endif
-else ifeq ($(SAN_FLAG), tsan)
-	CXXFLAGS += -fsanitize=thread
+ifeq ($(CONFIG),xsan)
+    CONFIG_FLAGS := $(XSAN_FLAGS)
+else ifeq ($(CONFIG),msan)
+    CONFIG_FLAGS := $(MSAN_FLAGS)
+#else ifeq ($(CONFIG),tsan)
+#    CONFIG_FLAGS := $(TSAN_FLAGS)
+else
+    CONFIG_FLAGS :=
 endif
 
+OPTIMIZATION_FLAGS := -O3 -fno-omit-frame-pointer
+WARNING_FLAGS := -Wall -Wextra -Wconversion -Wsign-conversion -Werror -pedantic
+
+CXX := clang++
+CXXFLAGS := -std=c++17 -I$(INC_DIR) $(OPTIMIZATION_FLAGS) $(WARNING_FLAGS) $(CONFIG_FLAGS)
+
 LDFLAGS :=
-LDLIBS :=
+LDLIBS  :=
 
-TARGET := $(PROJ_NAME)
-MAIN_NAME := main.cpp
+# Target
+TARGET := awakeonlan
+
 MAIN_EXEC := $(BIN_DIR)/$(TARGET)
+
+# Source & Object Discovery
 SRCS := $(wildcard $(SRC_DIR)/*.cpp)
-OBJS := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
-NON_MAIN_SRCS := $(filter-out $(SRC_DIR)/$(MAIN_NAME), $(SRCS))
-NON_MAIN_OBJS := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(NON_MAIN_SRCS))
+OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(SRCS))
 
-TEST_DIR_SRCS := $(wildcard $(TEST_DIR)/*.cpp)
-TEST_SRCS := $(notdir $(NON_MAIN_SRCS) $(TEST_DIR_SRCS))
-TEST_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(TEST_SRCS))
-TEST_EXECS := $(patsubst $(TEST_DIR)/%.cpp, $(BIN_DIR)/%, $(TEST_DIR_SRCS))
-SYSTEM_TEST_NAME := system_test
-SYSTEM_TEST_EXEC := $(BIN_DIR)/$(SYSTEM_TEST_NAME)
+NON_MAIN_SRCS := $(filter-out $(SRC_DIR)/main.cpp,$(SRCS))
+NON_MAIN_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(NON_MAIN_SRCS))
 
+TEST_SRCS := $(wildcard $(TEST_DIR)/*.cpp)
+TEST_OBJS := $(patsubst $(TEST_DIR)/%.cpp,$(BUILD_DIR)/tests/%.o,$(TEST_SRCS))
+TEST_EXECS := $(patsubst $(TEST_DIR)/%.cpp,$(BIN_DIR)/%,$(TEST_SRCS))
+
+# ---------------------------------------------------------------------------
+# Build Rules
+# ---------------------------------------------------------------------------
 all: build
 
 build: $(MAIN_EXEC)
 
-build-system-test: build $(SYSTEM_TEST_EXEC)
-
-# Compile source files.
+# Compile source files (automatically ensures build/ configuration directory exists)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Link main executable.
+## Compile test files (automatically ensures build/ configuration directory exists)
+$(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Link main executable (automatically ensures bin/ configuration directory exists)
 $(MAIN_EXEC): $(OBJS)
-	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-# Compile test files.
-$(BUILD_DIR)/%.o: $(TEST_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+# Link test executables (automatically ensures bin/ configuration directory exists)
+$(TEST_EXECS): $(BIN_DIR)/%: $(BUILD_DIR)/tests/%.o $(NON_MAIN_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-# Link test executables.
-$(TEST_EXECS): $(BIN_DIR)/%: $(BUILD_DIR)/%.o $(NON_MAIN_OBJS)
-	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
-
+# ---------------------------------------------------------------------------
+# Test Runners
+# ---------------------------------------------------------------------------
 test: $(TEST_EXECS)
-	@for test in $(TEST_EXECS); do \
-		echo "Running $$test"; \
-        $$test ; \
-        FAIL=$$? ; \
-        if [ $$FAIL -ne 0 ]; then \
-            echo FAILED test: $$test ; \
-            exit 2 ; \
-        fi ; \
+	@for t in $(TEST_EXECS); do \
+	   echo "Running $$t with CONFIG=$(CONFIG)"; \
+	   ./$$t || exit 1; \
 	done
 
-# NOTE: Some older versions of sanitizers (e.g. what the compiler may have been built with) have a bug regarding
-# ASLR bit counts exceeding 28. Most modern Linux kernels will set mmap_rnd_bits to 32. Will probably encounter this
-# if using Ubuntu 22.04's apt installed g++ or clang++.
-# The systemd work around: 'sudo sysctl -w vm.mmap_rnd_bits=28'
-test-xsan:
-	make clean-all
-	make SAN_FLAG=xsan test
-
-test-msan:
-	make clean-all
-	@if [ ${CXX} != "clang++" ]; then \
-		make SAN_FLAG=msan test ; \
-	else \
-		make test ; \
+test-valgrind: $(TEST_EXECS)
+	@if [ "$(CONFIG)" != "default" ]; then \
+	    echo "Error: Valgrind memcheck cannot run on sanitizer-instrumented binaries (CONFIG=$(CONFIG))." >&2; \
+	    echo "Please run: make test-valgrind CONFIG=default" >&2; \
+	    exit 1; \
 	fi
+	@mkdir -p $(LOG_DIR)
+	@for t in $(TEST_EXECS); do \
+	   base_name=$$(basename $$t); \
+	   log_file="$(LOG_DIR)/valgrind_$${base_name}.log"; \
+	   echo "Running Valgrind on $$t (Logging to $$log_file)..."; \
+	   valgrind \
+	       --tool=memcheck \
+	       --leak-check=full \
+	       --show-leak-kinds=all \
+	       --error-exitcode=2 \
+	       --track-origins=yes \
+	       --verbose \
+	       --fair-sched=yes \
+	       --log-file="$$log_file" \
+	       $$t 192.168.1.0/24 || exit 1; \
+	   echo "-> Passed: $$t"; \
+	done
 
-test-usan:
-	make clean-all
-	make SAN_FLAG=usan test
+# ---------------------------------------------------------------------------
+# Code Quality & Formatting
+# ---------------------------------------------------------------------------
+format:
+	bash ./format.sh
 
-test-tsan:
-	make clean-all
-	make SAN_FLAG=tsan test
+format-check:
+	bash ./format.sh check
 
-test-memcheck: $(SYSTEM_TEST_EXEC)
-	echo "Running test-memcheck"
-	@valgrind \
-		--leak-check=full \
-		--show-leak-kinds=all \
-		--error-exitcode=2 \
-		--track-origins=yes \
-		--verbose \
-		--fair-sched=yes \
-		--log-file=$(LOG_DIR)/${SYSTEM_TEST_NAME}_valgrind_log.txt \
-		$(SYSTEM_TEST_EXEC) ; \
-	FAIL=$$? ; \
-	if [ $$FAIL -ne 0 ]; then \
-		 echo FAILED test-memcheck ; \
-		 exit 2 ; \
-	fi ; \
+lint:
+	bash ./lint.sh
 
-test-helgrind: $(SYSTEM_TEST_EXEC)
-	echo "Running test-helgrind"
-	@valgrind \
-		--tool=helgrind \
-		--history-level=full \
-		--error-exitcode=2 \
-		--fair-sched=yes \
-		--verbose \
-		--log-file=$(LOG_DIR)/${SYSTEM_TEST_NAME}_helgrind_log.txt \
-		$(SYSTEM_TEST_EXEC) ; \
-	FAIL=$$? ; \
-	if [ $$FAIL -ne 0 ]; then \
-		echo FAILED test-memcheck ; \
-		exit 2 ; \
-	fi ; \
-
-test-sanitizers:  test-xsan test-msan test-tsan
-
-# Make sure to call 'make clean-all' after any sanitizer test as valgrind tools do not mix well with sanitizer instrumented
-# code.
-test-valgrind: test-memcheck test-helgrind
-
-install:
-	install -d $(DESTDIR)$(PREFIX)/$(PROJ_NAME)/include/
-	find $(INC_DIR) -type f -exec install -D -m 644 {} "$(DESTDIR)$(PREFIX)/$(PROJ_NAME)/{}" \;
-
-	install -d $(DESTDIR)$(PREFIX)/$(PROJ_NAME)/bin/
-	install -m 755 $(MAIN_EXEC) $(DESTDIR)$(PREFIX)/$(PROJ_NAME)/bin/
+# ---------------------------------------------------------------------------
+# Installation
+# ---------------------------------------------------------------------------
+install: build
+	@if [ "$(CONFIG)" != "default" ]; then \
+	    echo "Error: install requires CONFIG=default." >&2; \
+	    echo "Please run: make install CONFIG=default" >&2; \
+	    exit 1; \
+	fi
+	@echo "If permission is denied, retry with: sudo make install"
+	install -d "$(DESTDIR)$(PREFIX)/bin"
+	install -m 755 "$(MAIN_EXEC)" "$(DESTDIR)$(PREFIX)/bin/$(TARGET)"
 
 uninstall:
-	rm -rf $(DESTDIR)$(PREFIX)/$(PROJ_NAME)
+	@echo "If permission is denied, retry with: sudo make uninstall"
+	rm -f "$(DESTDIR)$(PREFIX)/bin/$(TARGET)"
 
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
 clean:
-	rm -rf $(BUILD_DIR)
-
-clean-all: clean
-	rm -rf $(BIN_DIR)
+	rm -rf build bin logs

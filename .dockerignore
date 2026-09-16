@@ -1,0 +1,7 @@
+.*
+!.clang-format
+!.clang-tidy
+
+bin/
+build/
+logs/

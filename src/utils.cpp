@@ -1,87 +1,93 @@
-#include "utils.h"
+#include "utils.hpp"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
-int DetermineIPVersion(const char *src)
-{
-    char buf[INET6_ADDRSTRLEN];
-    if (inet_pton(AF_INET, src, buf))
-    {
-        return 4;
+#include <array>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace wol {
+
+constexpr int MAC_ADDR_SEPARATOR_COUNT = 5;
+constexpr uint8_t HEX_VAL_OFFSET = 10;
+
+int determine_ip_version(char const* src) {
+    std::array<char, INET6_ADDRSTRLEN> buf{};
+    if (inet_pton(AF_INET, src, buf.data()) != 0) {
+        return IP_VERSION_4;
     }
-    else if (inet_pton(AF_INET6, src, buf))
-    {
-        return 6;
+    if (inet_pton(AF_INET6, src, buf.data()) != 0) {
+        return IP_VERSION_6;
     }
     return -1;
 }
 
-bool ValidateMACAddr(char* mac_addr_str)
-{
-    int i = 0;
-    int s = 0;
-    // Make sure mac_addr_str is null terminated.
-    while (*mac_addr_str)
-    {
-        if (isxdigit(*mac_addr_str))
-        {
-            i++;
-        }
-        else if (*mac_addr_str == ':' || *mac_addr_str == '-')
-        {
-            if (i == 0 || (i / 2 - 1) != s)
-            {
+bool validate_mac_addr(char const* mac_addr_str) {
+    if (mac_addr_str == nullptr) {
+        return false;
+    }
+    std::string const mac_str(mac_addr_str);
+    int digit_count = 0;
+    int separator_count = 0;
+    for (char const character : mac_str) {
+        if (isxdigit(static_cast<unsigned char>(character)) != 0) {
+            digit_count++;
+        } else if (character == ':' || character == '-') {
+            if (digit_count == 0 || ((digit_count / 2) - 1) != separator_count) {
                 break;
             }
-            s++;
+            separator_count++;
+        } else {
+            separator_count--;
         }
-        else
-        {
-            s--;
+    }
+    return (digit_count == MAC_ADDR_DIGIT_COUNT &&
+            ((separator_count == MAC_ADDR_SEPARATOR_COUNT) || (separator_count == 0)));
+}
+
+void sanitize_mac_addr(char* mac_addr_str) {
+    if (mac_addr_str == nullptr) {
+        return;
+    }
+    std::string const mac_str(mac_addr_str);
+    std::string cleaned;
+    cleaned.reserve(MAC_ADDR_DIGIT_COUNT);
+    for (char const character : mac_str) {
+        if (character != ':' && character != '-') {
+            cleaned.push_back(character);
         }
-        ++mac_addr_str;
     }
-    return ( i == 12 && ((s == 5) || (s == 0)) );
+    std::memcpy(mac_addr_str, cleaned.c_str(), cleaned.size() + 1);
 }
 
-// Use after ValidateMACAddr if (*mac_addr_str+2 == ':' ||  *mac_addr_str+2 == '-').
-void SanitizeMACAddr(char* mac_addr_str)
-{
-    mac_addr_str += 2;
-    char* fast_ptr = mac_addr_str+1;
-    for (int j=0; j<5; j++)
-    {
-        *mac_addr_str++ = *fast_ptr++;
-        *mac_addr_str++ = *fast_ptr++;
-        fast_ptr++;
+uint8_t hex_digit_to_uint8(char str) {
+    if (str >= '0' && str <= '9') {
+        return static_cast<uint8_t>(str - '0');
     }
-    *mac_addr_str = '\0';
+    if (str >= 'A' && str <= 'F') {
+        return static_cast<uint8_t>(str - 'A' + HEX_VAL_OFFSET);
+    }
+    if (str >= 'a' && str <= 'f') {
+        return static_cast<uint8_t>(str - 'a' + HEX_VAL_OFFSET);
+    }
+    return 0;  // Since input is pre-validated by validate_mac_addr, this is never hit under normal execution
 }
 
-uint8_t HexDigitToUint8(char str)
-{
-    if (str <= '9' && str >= '0')
-    {
-        return str - '0';
+void hex_string_to_bytes_vec(std::string const& ascii_string, std::vector<uint8_t>& bytes_vec) {
+    bytes_vec.clear();
+    bytes_vec.reserve(ascii_string.length() / 2);
+
+    for (size_t i = 0; i < ascii_string.length(); i += 2) {
+        uint8_t const high = hex_digit_to_uint8(ascii_string[i]);
+        uint8_t const low = hex_digit_to_uint8(ascii_string[i + 1]);
+        bytes_vec.push_back(static_cast<uint8_t>((high << 4) | low));
     }
-    if (str <= 'F' && str >= 'A')
-    {
-        return str - 'A' + 10;
-    }
-    if ( str <= 'f' && str >= 'a')
-    {
-        return str - 'a' + 10;
-    }
-    throw std::invalid_argument("HexDigitToUint8: Invalid hex character\n");
 }
 
-void HexStringToBytesVec(std::string& ascii_string, std::vector<uint8_t>& bytes_vec)
-{
-    int num_bytes = static_cast<int>(ascii_string.length());
-    for (int i = 0; i < num_bytes; i += 2)
-    {
-        uint8_t upper = HexDigitToUint8(ascii_string.at(i));
-        uint8_t lower = HexDigitToUint8(ascii_string.at(i+1));
-        uint8_t byte = (upper<<4) | lower;
-        bytes_vec.push_back(byte);
-    }
-}
+}  // namespace wol
